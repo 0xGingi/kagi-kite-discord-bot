@@ -1,0 +1,34 @@
+{
+  "discord": {
+    "token": "YOUR_DISCORD_BOT_TOKEN",
+    "channelId": "YOUR_DEFAULT_CHANNEL_ID",
+    "categoryChannels": {
+      "Technology": "TECH_CHANNEL_ID",
+      "AI": "AI_CHANNEL_ID",
+      "World": "WORLD_NEWS_CHANNEL_ID",
+      "USA": "USA_NEWS_CHANNEL_ID",
+      "Science": "SCIENCE_NEWS_CHANNEL_ID",
+      "Cybersecurity": "CYBERSECURITY_CHANNEL_ID",
+      "Apple": "APPLE_NEWS_CHANNEL_ID",
+      "Linux & OSS": "LINUX_OSS_NEWS_CHANNEL_ID"
+    }
+  },
+  "kagi": {
+    "apiKey": "YOUR_KAGI_API_KEY",
+    "summarizeModel": "agnes",
+    "enableSummarizer": true
+  },
+  "categories": [
+    "Technology",
+    "AI",
+    "Cybersecurity",
+    "Apple",
+    "Linux & OSS",
+    "World",
+    "USA",
+    "Science"
+  ],
+  "polling": {
+    "intervalHours": 12
+  }
+}

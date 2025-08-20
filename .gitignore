@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.log
+config.json
+sent-articles.json
+.env
+.DS_Store
+*.tgz
+*.tar.gz
+config.json
+sent-articles.json
