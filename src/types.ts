@@ -3,6 +3,8 @@ export interface Config {
     token: string;
     channelId: string;
     categoryChannels?: Record<string, string>;
+    useThreads: boolean;
+    useCategoryChannels: boolean;
   };
   kagi: {
     apiKey: string;
@@ -70,6 +72,13 @@ export interface SentArticle {
   timestamp: number;
   category: string;
   title: string;
+}
+
+export interface DailyThread {
+  date: string;
+  threadId: string;
+  channelId: string;
+  createdAt: number;
 }
 
 export interface KagiSummaryResponse {

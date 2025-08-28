@@ -9,3 +9,4 @@ sent-articles.json
 *.tar.gz
 config.json
 sent-articles.json
+daily-threads.json

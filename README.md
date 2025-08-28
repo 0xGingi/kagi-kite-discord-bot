@@ -2,7 +2,7 @@
 
 ![Kagi Kite Discord Bot](image.png)
 
-A Discord bot that scrapes news from Kagi Kite, summarizes articles using the Kagi Summarizer API, and posts them to a Discord channel.
+A Discord bot that scrapes news from Kagi Kite, summarizes articles using the Kagi Summarizer API, and posts them to Discord with flexible organization options.
 
 ## Features
 
@@ -88,6 +88,8 @@ A Discord bot that scrapes news from Kagi Kite, summarizes articles using the Ka
 ### Discord
 - `token`: Your Discord bot token
 - `channelId`: Default Discord channel ID for news posts
+- `useThreads`: Set to `true` to organize articles in daily threads, `false` to post directly to channels (default: true)
+- `useCategoryChannels`: Set to `true` to use separate channels per category, `false` to post all articles to the default channel (default: false)
 - `categoryChannels` (optional): Map specific categories to different channel IDs
 
 ### Kagi
@@ -122,7 +124,7 @@ AI, Apple, Bitcoin, Cryptocurrency, Cybersecurity, Economy, Linux & OSS, OnThisD
 
 ## Storage
 
-Articles are tracked in `sent-articles.json` to prevent duplicates. Records older than 30 days are automatically removed.
+Articles are tracked in `sent-articles.json` to prevent duplicates. Daily threads are tracked in `daily-threads.json` to maintain thread continuity across bot restarts. Records older than 30 days are automatically removed from both files.
 
 ## License
 

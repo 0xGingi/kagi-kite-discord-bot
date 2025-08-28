@@ -2,6 +2,8 @@
   "discord": {
     "token": "YOUR_DISCORD_BOT_TOKEN",
     "channelId": "YOUR_DEFAULT_CHANNEL_ID",
+    "useThreads": true,
+    "useCategoryChannels": false,
     "categoryChannels": {
       "Technology": "TECH_CHANNEL_ID",
       "AI": "AI_CHANNEL_ID",
