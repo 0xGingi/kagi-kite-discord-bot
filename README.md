@@ -70,6 +70,8 @@ A Discord bot that scrapes news from Kagi Kite, summarizes articles using the Ka
 
 1. **Build and run with Docker Compose:**
    ```bash
+   mkdir -p data
+   touch data/sent-articles.json
    docker compose up -d
    ```
 
