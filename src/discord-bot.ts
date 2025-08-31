@@ -50,8 +50,24 @@ export class DiscordBot {
       let newArticlesCount = 0;
 
       for (const { category, clusters, timestamp } of newsResults) {
+        let alreadySent = 0;
+        let newCount = 0;
         for (const cluster of clusters) {
-          const clusterId = this.kiteScraper.generateClusterId(cluster, category, timestamp);
+          const tsForId = (cluster as any)._pubTs ?? timestamp;
+          const clusterId = this.kiteScraper.generateClusterId(cluster, category, tsForId);
+          if (this.storage.isArticleSent(clusterId)) {
+            alreadySent++;
+          } else {
+            newCount++;
+          }
+        }
+        console.log(`[${category}] clusters=${clusters.length} ts=${timestamp} new=${newCount} dup=${alreadySent}`);
+      }
+
+      for (const { category, clusters, timestamp } of newsResults) {
+        for (const cluster of clusters) {
+          const tsForId = (cluster as any)._pubTs ?? timestamp;
+          const clusterId = this.kiteScraper.generateClusterId(cluster, category, tsForId);
           
           if (!this.storage.isArticleSent(clusterId)) {
             await this.processAndPostArticle(cluster, category, clusterId);
