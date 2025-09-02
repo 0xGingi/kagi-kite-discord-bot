@@ -104,9 +104,9 @@ export class KiteScraper {
       const guid = this.extractTag(block, 'guid');
       const pubDateStr = this.extractTag(block, 'pubDate');
       const pubTs = pubDateStr ? Math.floor(Date.parse(pubDateStr) / 1000) : feedTs;
-      const descHtml = this.extractTag(block, 'description');
-      const firstP = this.extractFirstParagraph(descHtml);
-      const summary = this.cleanText(firstP || this.stripTags(descHtml || '')).trim();
+      const contentEncoded = this.extractTag(block, 'content:encoded');
+      const descHtml = contentEncoded ?? this.extractTag(block, 'description');
+      const summary = this.summarizeHtmlContent(descHtml);
 
       const cluster: NewsCluster = {
         cluster_number: this.stableNumber(guid || link || `${idx}-${title}`),
@@ -143,8 +143,17 @@ export class KiteScraper {
 
   private extractFirstParagraph(html?: string): string | undefined {
     if (!html) return undefined;
-    const m = html.match(/<p>([\s\S]*?)<\/p>/i);
-    return m ? m[1] : undefined;
+    const re = /<p[^>]*>([\s\S]*?)<\/p>/gi;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(html)) !== null) {
+      const p = m[1] ?? '';
+      const text = this.cleanText(this.stripTags(p));
+      const withoutCites = this.removeKiteCitations(text);
+      if (withoutCites && withoutCites.replace(/[\W_]/g, '').length > 0) {
+        return p;
+      }
+    }
+    return undefined;
   }
 
   private stripTags(html: string): string {
@@ -157,6 +166,29 @@ export class KiteScraper {
       .replace(/\s+\./g, '.')
       .replace(/\.\s*\./g, '.')
       .trim();
+  }
+
+  private removeKiteCitations(text: string): string {
+    return text.replace(/\[[\w.-]+(?:\.[\w]+)*#\d+\]/g, '').trim();
+  }
+
+  private summarizeHtmlContent(html?: string): string {
+    if (!html) return '';
+    const p = this.extractFirstParagraph(html);
+    let text = this.cleanText(this.stripTags(p ?? ''));
+    text = this.removeKiteCitations(text);
+    if (text.length >= 1) return text;
+
+    const liRe = /<li[^>]*>([\s\S]*?)<\/li>/gi;
+    const items: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = liRe.exec(html)) !== null && items.length < 3) {
+      const li = this.removeKiteCitations(this.cleanText(this.stripTags(m[1] ?? '')));
+      if (li) items.push(li);
+    }
+    if (items.length) return items.join(' • ');
+
+    return this.removeKiteCitations(this.cleanText(this.stripTags(html)));
   }
 
   private decodeEntities(text: string): string {
