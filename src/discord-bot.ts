@@ -152,6 +152,7 @@ export class DiscordBot {
           );
         } catch (summaryError) {
           console.warn(`Failed to get Kagi summary for article "${cluster.title}", using original summary:`, summaryError);
+          summary = this.cleanKiteCitations(cluster.short_summary);
         }
       } else {
         summary = this.cleanKiteCitations(cluster.short_summary);
@@ -183,9 +184,12 @@ export class DiscordBot {
   }
 
   private createNewsEmbed(cluster: NewsCluster, category: string, summary: string): EmbedBuilder {
+    const title = (cluster.title && cluster.title.trim().length > 0) ? cluster.title : 'Untitled';
+    const safeSummary = (summary && summary.trim().length > 0) ? summary : null;
+
     const embed = new EmbedBuilder()
-      .setTitle(cluster.title)
-      .setDescription(summary)
+      .setTitle(title)
+      .setDescription(safeSummary)
       .setColor('#0066cc')
       .addFields({ name: 'Category', value: category, inline: true })
       .setTimestamp();
