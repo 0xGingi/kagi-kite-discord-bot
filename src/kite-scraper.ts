@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { XMLParser } from 'fast-xml-parser';
 import { KiteIndex, KiteNewsData, NewsCluster } from './types.js';
 
 export class KiteScraper {
@@ -42,37 +43,47 @@ export class KiteScraper {
       }
 
       try {
-        const primary = await this.getCategoryNews(categoryInfo.file);
+        // XML-only ingestion: derive .xml file and ignore JSON source
+        const xmlFile = categoryInfo.file.toLowerCase().endsWith('.xml')
+          ? categoryInfo.file
+          : categoryInfo.file.replace(/\.json$/i, '.xml');
 
-        let combinedClusters: NewsCluster[] = [...primary.clusters];
-        let combinedTs = primary.timestamp;
+        console.log(`[RSS] Fetching ${categoryName} from ${xmlFile}`);
+        const xmlData = await this.getCategoryNews(xmlFile);
 
-        if (categoryInfo.file.toLowerCase().endsWith('.json')) {
-          const xmlFile = categoryInfo.file.replace(/\.json$/i, '.xml');
-          try {
-            const xmlData = await this.getCategoryNews(xmlFile);
-
-            const seenTitles = new Set(
-              combinedClusters.map(c => this.normalizeTitle(c.title))
-            );
-
-            for (const xc of xmlData.clusters) {
-              const t = this.normalizeTitle(xc.title);
-              if (!seenTitles.has(t)) {
-                combinedClusters.push(xc);
-                seenTitles.add(t);
-              }
-            }
-            combinedTs = Math.max(combinedTs, xmlData.timestamp);
-          } catch (xmlErr) {
-            console.warn(`No XML fallback for ${categoryName} (${xmlFile}) or failed to parse:`, xmlErr?.toString?.());
+        // Ensure category is set on each cluster
+        const enriched = xmlData.clusters.map(c => {
+          const cc: NewsCluster = { ...c };
+          cc.category = categoryName;
+          // Ensure quote_source_url present if articles contain link
+          if (!cc.quote_source_url && cc.articles && cc.articles[0]?.link) {
+            cc.quote_source_url = cc.articles[0].link;
           }
-        }
+          // Fallback: try perspectives first source URL
+          if (!cc.quote_source_url && Array.isArray(cc.perspectives) && cc.perspectives[0]?.sources?.[0]?.url) {
+            cc.quote_source_url = cc.perspectives[0].sources[0].url;
+          }
+          // Fallback: try to extract any URL from short_summary
+          if (!cc.quote_source_url && typeof cc.short_summary === 'string' && cc.short_summary.length > 0) {
+            const m = cc.short_summary.match(/https?:\/\/[^\s<>"']+/i);
+            if (m) cc.quote_source_url = m[0];
+          }
+        
+          // Guarantee a non-empty title: prefer summary-based title, then URL
+          if (!cc.title || cc.title.trim().length === 0 || this.looksLikeHostname(cc.title)) {
+            const candidateUrl = cc.quote_source_url || cc.articles?.[0]?.link || (Array.isArray(cc.perspectives) && cc.perspectives[0]?.sources?.[0]?.url) || undefined;
+            cc.title = this.deriveTitleFromSummary(cc.short_summary)
+              || this.deriveTitleFromUrl(candidateUrl)
+              || 'Untitled';
+          }
+
+          return cc;
+        });
 
         results.push({
           category: categoryName,
-          clusters: combinedClusters,
-          timestamp: combinedTs
+          clusters: enriched,
+          timestamp: xmlData.timestamp
         });
       } catch (error) {
         console.error(`Failed to fetch news for category ${categoryName}:`, error);
@@ -88,32 +99,58 @@ export class KiteScraper {
   }
 
   private parseRssToNewsData(xml: string): KiteNewsData {
-    const lastBuildMatch = xml.match(/<lastBuildDate>([\s\S]*?)<\/lastBuildDate>/i);
-    const lastBuildDate = lastBuildMatch ? lastBuildMatch[1].trim() : '';
+    const parser = new XMLParser({
+      ignoreAttributes: false,
+      attributeNamePrefix: '',
+      trimValues: true,
+      allowBooleanAttributes: true,
+    });
+    let obj: any;
+    try {
+      obj = parser.parse(xml);
+    } catch (e) {
+      console.error('Failed to parse RSS XML:', e);
+      return { category: '', timestamp: Math.floor(Date.now() / 1000), read: 0, clusters: [] };
+    }
+
+    const channel = obj?.rss?.channel;
+    const lastBuildDate: string = channel?.lastBuildDate || '';
     const feedTsMs = lastBuildDate ? Date.parse(lastBuildDate) : Date.now();
     const feedTs = Math.floor(feedTsMs / 1000);
 
+    const rawItems = channel?.item ? (Array.isArray(channel.item) ? channel.item : [channel.item]) : [];
     const items: NewsCluster[] = [];
-    const itemRegex = /<item>([\s\S]*?)<\/item>/gi;
-    let m: RegExpExecArray | null;
+
     let idx = 0;
-    while ((m = itemRegex.exec(xml)) !== null) {
-      const block = m[1];
-      const title = this.extractTag(block, 'title');
-      const link = this.extractTag(block, 'link');
-      const guid = this.extractTag(block, 'guid');
-      const pubDateStr = this.extractTag(block, 'pubDate');
-      const pubTs = pubDateStr ? Math.floor(Date.parse(pubDateStr) / 1000) : feedTs;
-      const contentEncoded = this.extractTag(block, 'content:encoded');
-      const descHtml = contentEncoded ?? this.extractTag(block, 'description');
+    for (const it of rawItems) {
+      const titleRaw = (typeof it.title === 'string') ? it.title : '';
+      const contentEncoded = it['content:encoded'] as string | undefined;
+      const descHtml = contentEncoded || (typeof it.description === 'string' ? it.description : undefined);
       const summary = this.summarizeHtmlContent(descHtml);
+      const pubDateStr = typeof it.pubDate === 'string' ? it.pubDate : undefined;
+      const pubTs = pubDateStr ? Math.floor(Date.parse(pubDateStr) / 1000) : feedTs;
+
+      // Link resolution: prefer <link>, then GUID when it's a URL, then any href in description
+      let link = this.sanitizeUrlCandidate(it.link)
+        || this.sanitizeUrlCandidate(it.guid)
+        || (descHtml ? (descHtml.match(/href=['\"][^'\"\s>]+['\"]/i)?.[0]?.replace(/^href=['\"]/i, '').replace(/['\"]$/, '')) : undefined)
+        || this.pickBestItemUrl(JSON.stringify(it));
+
+      let title = this.cleanText(this.stripTags(titleRaw || ''));
+      if (!title || this.looksLikeHostname(title)) {
+        title = this.deriveTitleFromSummary(summary) || this.deriveTitleFromUrl(link) || 'Untitled';
+      }
+
+      if (idx < 3) {
+        console.log(`[RSS] Item #${idx} titleCandidate=\"${(title||'').slice(0,80)}\" link=${link || 'N/A'} sumLen=${(summary||'').length}`);
+      }
 
       const cluster: NewsCluster = {
-        cluster_number: this.stableNumber(guid || link || `${idx}-${title}`),
+        cluster_number: this.stableNumber((it.guid as string) || link || `${idx}-${title}`),
         unique_domains: 1,
         number_of_titles: 1,
         category: '',
-        title: title || (link || '').split('/').pop() || 'Untitled',
+        title: title,
         short_summary: summary || '',
         talking_points: [],
         quote_source_url: link?.trim() || undefined,
@@ -121,17 +158,11 @@ export class KiteScraper {
         articles: link ? [{ title: title || 'Article', link: link.trim(), domain: this.tryGetDomain(link) || '', date: pubDateStr || '', image: '', image_caption: '' }] : undefined,
       };
       (cluster as any)._pubTs = pubTs;
-
       items.push(cluster);
       idx++;
     }
 
-    return {
-      category: '',
-      timestamp: feedTs,
-      read: 0,
-      clusters: items,
-    };
+    return { category: '', timestamp: feedTs, read: 0, clusters: items };
   }
 
   private extractTag(block: string, tag: string): string | undefined {
@@ -139,6 +170,52 @@ export class KiteScraper {
     const match = block.match(re);
     if (!match) return undefined;
     return match[1].replace(/^\s+|\s+$/g, '');
+  }
+
+  private unwrapCdata(text?: string): string | undefined {
+    if (typeof text !== 'string') return text;
+    return text.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, '$1');
+  }
+
+  private sanitizeUrlCandidate(text?: any): string | undefined {
+    if (!text) return undefined;
+    if (typeof text !== 'string') {
+      // fast-xml-parser may represent nodes with attributes as objects with #text
+      const possible = (text['#text'] || text.text || text._ || '').toString();
+      if (!possible) return undefined;
+      text = possible;
+    }
+    const cleaned = (text as string).replace(/\s+/g, ' ').trim();
+    const m = cleaned.match(/https?:\/\/[^\s<>'\"]+/i);
+    return m ? m[0] : undefined;
+  }
+
+  private deriveTitleFromSummary(summary?: string): string | null {
+    if (!summary) return null;
+    const s = summary.trim();
+    if (!s) return null;
+    // Use first sentence or first ~12 words
+    const firstSentenceMatch = s.match(/^(.+?[.!?])\s+/);
+    const candidate = firstSentenceMatch ? firstSentenceMatch[1] : s.split(/\s+/).slice(0, 14).join(' ');
+    // Guard against overlong titles
+    return candidate.length > 140 ? candidate.slice(0, 137) + '…' : candidate;
+  }
+
+  private looksLikeHostname(text?: string): boolean {
+    if (!text) return false;
+    const t = text.trim();
+    return /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(t) && !/\s/.test(t);
+  }
+
+  private pickBestItemUrl(block: string): string | undefined {
+    const urls = block.match(/https?:\/\/[^\s<>'\"]+/gi) || [];
+    if (urls.length === 0) return undefined;
+    // Prefer kite item URLs over image proxy links
+    const preferred = urls.find(u => /kite\.kagi\.com\//i.test(u));
+    if (preferred) return preferred;
+    // De-prioritize image proxy links
+    const nonImg = urls.find(u => !/kagiproxy\.com\/img\//i.test(u));
+    return nonImg || urls[0];
   }
 
   private extractFirstParagraph(html?: string): string | undefined {
@@ -157,7 +234,8 @@ export class KiteScraper {
   }
 
   private stripTags(html: string): string {
-    return html.replace(/<[^>]*>/g, ' ');
+    const s = this.unwrapCdata(html) ?? '';
+    return s.replace(/<[^>]*>/g, ' ');
   }
 
   private cleanText(text: string): string {
@@ -189,6 +267,31 @@ export class KiteScraper {
     if (items.length) return items.join(' • ');
 
     return this.removeKiteCitations(this.cleanText(this.stripTags(html)));
+  }
+
+  private deriveTitleFromUrl(url?: string | null): string | null {
+    if (!url) return null;
+    try {
+      const u = new URL(url.trim());
+      const parts = u.pathname.split('/').filter(Boolean).map(p => decodeURIComponent(p));
+      if (parts.length === 0) return u.hostname;
+      // Prefer the last meaningful segment
+      let candidate = parts[parts.length - 1];
+      if (!candidate || /^(\d+|index|home)$/i.test(candidate)) {
+        // Try previous non-numeric, non-generic segment
+        for (let i = parts.length - 2; i >= 0; i--) {
+          const seg = parts[i];
+          if (seg && !/^(\d+|index|home)$/i.test(seg) && !/^[a-f0-9-]{8,}$/i.test(seg)) {
+            candidate = seg; break;
+          }
+        }
+      }
+      if (!candidate) return u.hostname;
+      const words = candidate.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+      return words.length >= 3 ? words : (words || u.hostname);
+    } catch {
+      return null;
+    }
   }
 
   private decodeEntities(text: string): string {

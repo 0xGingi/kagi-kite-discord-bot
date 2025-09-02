@@ -4,11 +4,13 @@ WORKDIR /usr/src/app
 FROM base AS install
 RUN mkdir -p /temp/dev
 COPY package.json bun.lockb? /temp/dev/
-RUN cd /temp/dev && bun install --frozen-lockfile
+# Install dev deps (allow resolver to update lockfile when deps change)
+RUN cd /temp/dev && bun install
 
 RUN mkdir -p /temp/prod
 COPY package.json bun.lockb? /temp/prod/
-RUN cd /temp/prod && bun install --frozen-lockfile --production
+# Install prod deps
+RUN cd /temp/prod && bun install --production
 
 FROM base AS prerelease
 COPY --from=install /temp/dev/node_modules node_modules

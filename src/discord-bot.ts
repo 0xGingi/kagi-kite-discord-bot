@@ -142,16 +142,48 @@ export class DiscordBot {
         throw new Error(`Could not find Discord channel: ${channelId}`);
       }
 
+      // Derive a stable title early for logs and posting
+      let linkUrlForTitle = cluster.quote_source_url || cluster.articles?.[0]?.link || '';
+      if (!linkUrlForTitle && Array.isArray(cluster.perspectives) && cluster.perspectives[0]?.sources?.[0]?.url) {
+        linkUrlForTitle = cluster.perspectives[0].sources[0].url;
+      }
+      if (!linkUrlForTitle && typeof cluster.short_summary === 'string') {
+        const m = cluster.short_summary.match(/https?:\/\/[^\s<>"']+/i);
+        if (m) linkUrlForTitle = m[0];
+      }
+      const rawClusterTitle = (cluster.title || '').trim();
+      const postTitle = (!rawClusterTitle || this.looksLikeHostname(rawClusterTitle))
+        ? (this.deriveTitleFromSummary(cluster.short_summary) || this.deriveTitleFromUrl(linkUrlForTitle) || 'Untitled')
+        : rawClusterTitle;
+
       let summary = cluster.short_summary;
-      
+
       if (this.config.kagi.enableSummarizer) {
         try {
-          summary = await this.kagiSummarizer.summarizeText(
-            cluster.short_summary, 
-            this.config.kagi.summarizeModel
-          );
+          const hasText = !!(cluster.short_summary && cluster.short_summary.trim().length > 0);
+          if (hasText) {
+            summary = await this.kagiSummarizer.summarizeText(
+              cluster.short_summary, 
+              this.config.kagi.summarizeModel
+            );
+          } else {
+            // Prefer the same candidate we use for title derivation
+            let linkUrl = linkUrlForTitle;
+            if (!linkUrl && cluster.perspectives && cluster.perspectives.length > 0) {
+              const firstSource = cluster.perspectives[0].sources?.[0];
+              if (firstSource?.url) linkUrl = firstSource.url;
+            }
+            if (linkUrl && !this.isLikelyFeedOrHost(linkUrl)) {
+              summary = await this.kagiSummarizer.summarizeUrl(
+                linkUrl,
+                this.config.kagi.summarizeModel
+              );
+            } else {
+              summary = '';
+            }
+          }
         } catch (summaryError) {
-          console.warn(`Failed to get Kagi summary for article "${cluster.title}", using original summary:`, summaryError);
+          console.warn(`Failed to get Kagi summary for article "${postTitle}", using original summary:`, summaryError);
           summary = this.cleanKiteCitations(cluster.short_summary);
         }
       } else {
@@ -159,22 +191,32 @@ export class DiscordBot {
       }
 
       const embed = this.createNewsEmbed(cluster, category, summary);
+
+      if (postTitle === 'Untitled') {
+        const firstArticleLink = cluster.articles?.[0]?.link || '';
+        console.warn('Debug: Untitled post computed. Inspecting fields:', {
+          rawTitle: cluster.title,
+          linkUrlForTitle,
+          quote_source_url: cluster.quote_source_url,
+          firstArticleLink
+        });
+      }
       
       if (this.config.discord.useThreads) {
         const today = new Date().toISOString().split('T')[0];
         const thread = await this.getOrCreateDailyThread(channel, today, category);
         await thread.send({ embeds: [embed] });
-        console.log(`Posted article to thread: ${cluster.title}`);
+        console.log(`Posted article to thread: ${postTitle}`);
       } else {
         await channel.send({ embeds: [embed] });
-        console.log(`Posted article to channel: ${cluster.title}`);
+        console.log(`Posted article to channel: ${postTitle}`);
       }
 
       const sentArticle: SentArticle = {
         clusterId,
         timestamp: Date.now(),
         category,
-        title: cluster.title
+        title: postTitle
       };
 
       this.storage.markArticleSent(sentArticle);
@@ -184,8 +226,22 @@ export class DiscordBot {
   }
 
   private createNewsEmbed(cluster: NewsCluster, category: string, summary: string): EmbedBuilder {
-    const title = (cluster.title && cluster.title.trim().length > 0) ? cluster.title : 'Untitled';
-    const safeSummary = (summary && summary.trim().length > 0) ? summary : null;
+    const linkUrlCandidate = cluster.quote_source_url || cluster.articles?.[0]?.link || '';
+    const derivedFromSummary = this.deriveTitleFromSummary(summary || cluster.short_summary);
+    const derivedFromUrl = this.deriveTitleFromUrl(linkUrlCandidate);
+    const rawClusterTitle = (cluster.title || '').trim();
+    const title = (!rawClusterTitle || this.looksLikeHostname(rawClusterTitle))
+      ? (derivedFromSummary || derivedFromUrl || 'Untitled')
+      : rawClusterTitle;
+
+    let safeSummary = (summary && summary.trim().length > 0) ? summary : null;
+    if (!safeSummary && Array.isArray(cluster.talking_points) && cluster.talking_points.length > 0) {
+      const bullets = cluster.talking_points
+        .map(tp => (tp || '').toString().trim())
+        .filter(Boolean)
+        .slice(0, 3);
+      if (bullets.length) safeSummary = bullets.join(' • ');
+    }
 
     const embed = new EmbedBuilder()
       .setTitle(title)
@@ -207,6 +263,11 @@ export class DiscordBot {
       }
     }
 
+    if (!linkUrl && typeof summary === 'string' && summary.length > 0) {
+      const m = summary.match(/https?:\/\/[^\s<>"']+/i);
+      if (m) linkUrl = m[0];
+    }
+
     if (linkUrl) {
       embed.setURL(linkUrl);
     }
@@ -220,6 +281,55 @@ export class DiscordBot {
     }
 
     return embed;
+  }
+
+  private deriveTitleFromUrl(url?: string): string | null {
+    if (!url) return null;
+    try {
+      const u = new URL(url.trim());
+      const parts = u.pathname.split('/').filter(Boolean).map(p => decodeURIComponent(p));
+      if (parts.length === 0) return u.hostname;
+      let candidate = parts[parts.length - 1];
+      if (!candidate || /^(\d+|index|home)$/i.test(candidate)) {
+        for (let i = parts.length - 2; i >= 0; i--) {
+          const seg = parts[i];
+          if (seg && !/^(\d+|index|home)$/i.test(seg) && !/^[a-f0-9-]{8,}$/i.test(seg)) { candidate = seg; break; }
+        }
+      }
+      if (!candidate) return u.hostname;
+      const words = candidate.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+      return words.length >= 3 ? words : (words || u.hostname);
+    } catch {
+      return null;
+    }
+  }
+
+  private deriveTitleFromSummary(summary?: string | null): string | null {
+    if (!summary) return null;
+    const s = summary.trim();
+    if (!s) return null;
+    const firstSentenceMatch = s.match(/^(.+?[.!?])\s+/);
+    const candidate = firstSentenceMatch ? firstSentenceMatch[1] : s.split(/\s+/).slice(0, 14).join(' ');
+    return candidate.length > 140 ? candidate.slice(0, 137) + '…' : candidate;
+  }
+
+  private looksLikeHostname(text: string): boolean {
+    const t = text.trim();
+    // Very short or contains a dot and no spaces: likely a hostname like example.com
+    if (/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(t) && !/\s/.test(t)) return true;
+    return false;
+  }
+
+  private isLikelyFeedOrHost(url: string): boolean {
+    try {
+      const u = new URL(url);
+      if (!u.pathname || u.pathname === '/' ) return true; // bare host
+      // treat .xml feeds or kite category roots as not good for summarization
+      if (/\.xml$/i.test(u.pathname)) return true;
+      return false;
+    } catch {
+      return true;
+    }
   }
 
   private cleanKiteCitations(text: string): string {

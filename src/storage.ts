@@ -18,8 +18,8 @@ export class Storage {
       const dir = path.dirname(this.filePath);
       await fs.mkdir(dir, { recursive: true });
       
-      const data = await fs.readFile(this.filePath, 'utf-8');
-      const articles: SentArticle[] = JSON.parse(data);
+      const data = await fs.readFile(this.filePath, 'utf-8').catch(() => '');
+      const articles: SentArticle[] = this.safeParseArray<SentArticle>(data);
       
       for (const article of articles) {
         this.sentArticles.set(article.clusterId, article);
@@ -64,8 +64,8 @@ export class Storage {
 
   private async loadThreads(): Promise<void> {
     try {
-      const data = await fs.readFile(this.threadsFilePath, 'utf-8');
-      const threads: DailyThread[] = JSON.parse(data);
+      const data = await fs.readFile(this.threadsFilePath, 'utf-8').catch(() => '');
+      const threads: DailyThread[] = this.safeParseArray<DailyThread>(data);
       
       for (const thread of threads) {
         this.dailyThreads.set(thread.date, thread);
@@ -163,6 +163,18 @@ export class Storage {
     if (removedCount > 0) {
       console.log(`Cleaned up ${removedCount} old thread records`);
       await this.saveThreads();
+    }
+  }
+
+  private safeParseArray<T>(data: string): T[] {
+    const text = (data || '').trim();
+    if (!text) return [];
+    try {
+      const parsed = JSON.parse(text);
+      return Array.isArray(parsed) ? parsed as T[] : [];
+    } catch {
+      console.warn('Invalid JSON content detected; resetting to empty array');
+      return [];
     }
   }
 }
